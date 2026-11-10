@@ -41,11 +41,7 @@ class ExeUnitIO(params: ExeUnitParams)(implicit p: Parameters) extends XSBundle 
   val csrio = Option.when(params.hasCSR)(new CSRFileIO)
   val toFrontendBJUResolve = Option.when(params.hasBrhFu)(Valid(new Resolve))
   val I2FDataIn = Option.when(params.needDataFromI2F)(Flipped(ValidIO(UInt(XLEN.W))))
-  val F2IDataIn = Option.when(params.needDataFromF2I)(Flipped((new Bundle {
-    val valid = Bool()
-    val pdest = UInt(FpPhyRegIdxWidth.W)
-    val data = UInt(XLEN.W)
-  })))
+  val F2IDataIn = Option.when(params.needDataFromF2I)(Flipped(new F2IWriteBackBundle))
   val csrToDecode = Option.when(params.hasCSR)(Output(new CSRToDecode))
   val fenceio = Option.when(params.hasFence)(new FenceIO)
   val frm = Option.when(params.needSrcFrm)(Input(Frm()))
@@ -419,6 +415,12 @@ class ExeUnitImp(implicit p: Parameters, val exuParams: ExeUnitParams) extends X
   io.out.bits.redirect.               foreach(x => x := Mux1H((fuOutValidOH zip fuRedirectVec).filter(_._2.isDefined).map(x => (x._1, x._2.get))))
   io.out.bits.toRob.valid                            := Mux1H(fuOutValidOH, funcUnits.map(_.io.out.valid))
   io.out.bits.toRob.bits.robIdx                      := Mux1H(fuOutValidOH, fuOutBitsVec.map(_.ctrl.robIdx))
+  io.out.bits.intRfOwner.foreach { owner =>
+    owner := io.out.bits.toRob.bits.robIdx
+    io.F2IDataIn.foreach { f2i =>
+      when (f2i.valid) { owner := f2i.owner }
+    }
+  }
   io.out.bits.toRob.bits.fflags.      foreach(x => x := Mux1H(fuOutValidOH, fuOutresVec.map(_.fflags.getOrElse(0.U.asTypeOf(io.out.bits.toRob.bits.fflags.get)))))
   io.out.bits.toRob.bits.fflagsWen.   foreach(x => x := Mux1H(fuOutValidOH, fuOutBitsVec.map(_.ctrl.fflagsWen.getOrElse(false.B))))
   io.out.bits.toRob.bits.vxsat.       foreach(x => x := Mux1H(fuOutValidOH, fuOutresVec.map(_.vxsat.getOrElse(0.U.asTypeOf(io.out.bits.toRob.bits.vxsat.get)))))

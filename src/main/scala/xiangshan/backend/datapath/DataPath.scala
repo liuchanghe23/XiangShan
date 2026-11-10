@@ -27,6 +27,10 @@ class DataPath(implicit p: Parameters, params: BackendParams, param: SchdBlockPa
   extends XSModule with HasXSParameter {
 
   val io = IO(new DataPathIO())
+  private val intResidentReady = WireDefault(VecInit.fill(IntRegTagCount)(true.B))
+  private val intReuseCanIssue = WireDefault(VecInit.fill(IntPhyRegs)(true.B))
+  private val intRecoveryBusy = WireDefault(false.B)
+  io.intReuseRecoveryBusy := intRecoveryBusy
 
   private val (fromIntIQ, toIntIQ, toIntExu) = (io.fromIntIQ, io.toIntIQ, io.toIntExu)
   private val (fromFpIQ,  toFpIQ,  toFpExu)  = (io.fromFpIQ,  io.toFpIQ,  io.toFpExu)
@@ -56,7 +60,7 @@ class DataPath(implicit p: Parameters, params: BackendParams, param: SchdBlockPa
 
   private val intPregNumBank = coreParams.intPreg.numBank
   private val intRfBankRaddrWidth = coreParams.intPreg.bankRaddrWidth
-  private val intArbiterAddrWidth = coreParams.intPreg.arbiterAddrWidth
+  private val intArbiterAddrWidth = backendParams.intPregParams.arbiterAddrWidth
   private val intRFReadArbiter = Module(new IntRFBankReadArbiter(backendParams))
   private val fpRFReadArbiter = Module(new FpRFReadArbiter(backendParams))
   private val vfRFReadArbiter = Module(new VfRFReadArbiter(backendParams))
@@ -284,11 +288,59 @@ class DataPath(implicit p: Parameters, params: BackendParams, param: SchdBlockPa
     val v0RfWaddr = Wire(Vec(io.fromV0Wb.get.length, UInt(log2Up(V0PhyRegs).W)))
     val v0RfWdata = Wire(Vec(io.fromV0Wb.get.length, UInt(V0Data().dataWidth.W)))
 
-    IntRegFileBank(
-      "IntRegFile", intSchdParams.numPregs, intPregNumBank,
-      intRfRaddr, intRfRdata.get, intRfWen, intRfWaddr, intRfWdata,
-      debugAllRData = intDiffReadData
-    )
+    if (EnableIntRegReuse) {
+      val rf = Module(new IntShadowRegfile(IntPhyRegs, intPregNumBank,
+        intRfRaddr.size, intRfWen.size, RenameWidth, intSchdParams.rfDataWidth,
+        io.intReuseAlloc.head.bits.owner.getWidth, debugEnabled = backendParams.basicDebugEn))
+      rf.io.readAddr := intRfRaddr
+      intRfRdata.get := rf.io.readData
+      intDiffReadData.foreach(_ := rf.io.debugData)
+      rf.io.allocate.zip(io.intReuseAlloc).foreach { case (a, source) =>
+        a.valid := source.valid
+        a.bits.tag := source.bits.tag
+        a.bits.owner := source.bits.owner.asUInt
+      }
+      require(RabCommitWidth == RenameWidth, "local shadow retirement ports must match")
+      rf.io.commit.zip(io.intReuseCommit).foreach { case (c, source) =>
+        c.valid := source.valid
+        c.bits.tag := source.bits.tag
+        c.bits.owner := source.bits.owner.asUInt
+      }
+      rf.io.redirect := io.intReuseRedirect.valid
+      for (base <- 0 until IntPhyRegs; version <- 0 until 2) {
+        val owner = rf.io.versionOwner(base)(version).asTypeOf(new xiangshan.backend.rob.RobPtr)
+        val tag = (base + (version << IntPhyBaseIdxWidth)).U
+        // special_walk may deliver previously approved commits alongside a
+        // redirect. Such a version must never be killed by an old ROB index.
+        val robRetiring = io.intReuseRetire.map(r => r.valid && r.bits.owner.isSameEntry(owner) &&
+          (owner.isFormer || r.bits.hasLatter)).reduce(_ || _)
+        rf.io.retired(base)(version) := robRetiring
+        val retiring = robRetiring || io.intReuseCommit.map(c => c.valid && c.bits.tag === tag &&
+          c.bits.owner.asUInt === owner.asUInt).reduce(_ || _)
+        rf.io.kill(base)(version) := rf.io.versionLive(base)(version) &&
+          !rf.io.versionCommitted(base)(version) && !retiring && owner.needFlush(io.intReuseRedirect)
+      }
+      intResidentReady := rf.io.residentReady
+      intReuseCanIssue := rf.io.canIssueReuse
+      intRecoveryBusy := rf.io.recoveryBusy
+      XSPerfAccumulate("int_shadow_checkpoint", PopCount(rf.io.checkpointed))
+      XSPerfAccumulate("int_shadow_restore", rf.io.recovered.valid)
+      XSPerfAccumulate("int_shadow_recovery_cycles", rf.io.recoveryBusy)
+      val lastFlush = RegNextWithEnable(io.flush)
+      rf.io.write.zipWithIndex.foreach { case (w, port) =>
+        val wbOwner = RegEnable(io.fromIntWb.get(port).owner, io.fromIntWb.get(port).wen)
+        w.valid := intRfWen(port) && !wbOwner.needFlush(Seq(io.flush, lastFlush))
+        w.bits.tag := intRfWaddr(port)
+        w.bits.owner := wbOwner.asUInt
+        w.bits.data := intRfWdata(port)
+      }
+    } else {
+      IntRegFileBank(
+        "IntRegFile", intSchdParams.numPregs, intPregNumBank,
+        intRfRaddr, intRfRdata.get, intRfWen, intRfWaddr, intRfWdata,
+        debugAllRData = intDiffReadData
+      )
+    }
     FpRegFile("VlRegFile", VlPhyRegs, vlRfRaddr, vlRfRdata.get, vlRfWen, vlRfWaddr, vlRfWdata,
       bankNum = 1,
       isVlRegfile = true,
@@ -618,7 +670,19 @@ class DataPath(implicit p: Parameters, params: BackendParams, param: SchdBlockPa
           // FIXME: vl and v0 need read enable signal
           !source.readReg || srcNotBlock && vlRdArbWinner(i)(j).getOrElse(true.B) && v0RdArbWinner(i)(j).getOrElse(true.B)
       }.fold(true.B)(_ && _)
-      val notBlock = rdNotBlock(i)(j) && intWbNotBlock(i)(j) && fpWbNotBlock(i)(j) && vfWbNotBlock(i)(j) && v0WbNotBlock(i)(j) && vlWbNotBlock(i)(j)
+      val localShadowReady = if (EnableIntRegReuse && param.isIntSchd) {
+        val psrc = fromIQDeqOg1Payload(i)(j).psrc
+        val readsResident = s0.bits.rfBankRen.map(_.zipWithIndex.map { case (ren, src) =>
+          !ren.asUInt.orR || intResidentReady(psrc(src))
+        }.reduce(_ && _)).getOrElse(true.B)
+        val reuseReady = if (s0.bits.exuParams.writeIntRf) {
+          val isReuse = s0.bits.rfWen.getOrElse(false.B) && s0.bits.pdest(IntPhyBaseIdxWidth)
+          val stableInputs = s0.bits.loadDependency.map(d => !d.asUInt.orR).getOrElse(true.B)
+          !isReuse || (intReuseCanIssue(s0.bits.pdest(IntPhyBaseIdxWidth - 1, 0)) && stableInputs)
+        } else true.B
+        !intRecoveryBusy && readsResident && reuseReady
+      } else true.B
+      val notBlock = localShadowReady && rdNotBlock(i)(j) && intWbNotBlock(i)(j) && fpWbNotBlock(i)(j) && vfWbNotBlock(i)(j) && v0WbNotBlock(i)(j) && vlWbNotBlock(i)(j)
       val s1_flush = s0.bits.robIdx.needFlush(Seq(io.flush, flushReg))
       val s1_cancel = og1FailedVec2(i)(j)
       val s0_cancel = Wire(Bool())
@@ -703,6 +767,11 @@ class DataPath(implicit p: Parameters, params: BackendParams, param: SchdBlockPa
       val sinkData = toExu(i)(j).bits
       // assign
       toExu(i)(j).valid := s1_toExuValid(i)(j) && !og1FailedVec2(i)(j)
+      // Local recovery blocks OG0 admission. Drain surviving OG1 work: a
+      // zero-latency IQ wakeup has already escaped, and OG1 failure cannot
+      // retract its consumers' ready state or speculative regcache tag.
+      // The execution redirect still flushes younger work; row restoration
+      // starts after this boundary, once no new OG1 operand read can enter.
       s1_toExuReady(i)(j) := toExu(i)(j).ready
       sinkData := s1_toExuData(i)(j)
       // s1Reg --[Ctrl]--> exu(s1) ---------- end
@@ -829,6 +898,11 @@ class DataPathIO()(implicit p: Parameters, params: BackendParams, param: SchdBlo
   private val vecSchdParams = params.schdParams(VecScheduler())
   // bundles
   val hartId = Input(UInt(8.W))
+  val intReuseAlloc = Input(Vec(RenameWidth, Valid(new xiangshan.backend.rename.IntReuseAllocation)))
+  val intReuseCommit = Input(Vec(RabCommitWidth, Valid(new xiangshan.backend.rename.IntReuseAllocation)))
+  val intReuseRetire = Input(Vec(CommitWidth, Valid(new xiangshan.backend.rename.IntReuseRetirement)))
+  val intReuseRedirect = Input(Valid(new Redirect))
+  val intReuseRecoveryBusy = Output(Bool())
 
   val flush: ValidIO[Redirect] = Flipped(ValidIO(new Redirect))
 

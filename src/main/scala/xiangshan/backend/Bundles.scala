@@ -88,6 +88,7 @@ object Bundles {
     connectSamePort(sink.bits.toRob.bits, source.bits)
     connectSamePort(sink.bits, source.bits)
     sink.bits.toRob.valid             := source.valid
+    sink.bits.intRfOwner.foreach(_ := source.bits.robIdx)
     sink.bits.toIntRf.foreach(_.valid := source.bits.intWen.get)
     sink.bits.toIntRf.foreach(_.bits  := source.bits.data(0))
     sink.bits.toFpRf. foreach(_.valid := source.bits.fpWen.get)
@@ -1363,16 +1364,21 @@ object Bundles {
   }
 
 
+  // F2I borrows an integer RF port but completes through the floating ROB path.
+  // Keep its allocation identity with the result, including ROB wrap and slot.
+  class F2IWriteBackBundle(implicit p: Parameters) extends XSBundle {
+    val valid = Bool()
+    val pdest = UInt(IntPhyRegIdxWidth.W)
+    val data = UInt(XLEN.W)
+    val owner = new RobPtr
+  }
+
   class ExuCrossRegion(val params: SchdBlockParams)(implicit p: Parameters) extends XSBundle {
     val I2FWakeupOut = Option.when(params.isIntSchd)(ValidIO(new IssueQueueIQWakeUpBundle(params.backendParam.getExuIdxI2F, params.backendParam)))
     val I2FDataOut   = Option.when(params.isIntSchd)(ValidIO(UInt(XLEN.W)))
     val I2FDataIn    = Option.when(params.isFpSchd)(Flipped(ValidIO(UInt(XLEN.W))))
     val F2IWakeupOut = Option.when(params.isFpSchd)(ValidIO(new IssueQueueIQWakeUpBundle(params.backendParam.getExuIdxF2I, params.backendParam)))
-    val F2IDataIn    = Option.when(params.isIntSchd)(Flipped(new Bundle {
-      val valid = Bool()
-      val pdest = UInt(FpPhyRegIdxWidth.W)
-      val data = UInt(XLEN.W)
-    }))
+    val F2IDataIn    = Option.when(params.isIntSchd)(Flipped(new F2IWriteBackBundle))
     val busyTableF2I = Option.when(params.isIntSchd)(Input(UInt(3.W)))
     val busyTableI2F = Option.when(params.isIntSchd)(Output(UInt(3.W)))
   }
@@ -1442,6 +1448,8 @@ object Bundles {
     val pdestV0        = Option.when(params.writeV0Rf)(UInt(V0PhyRegIdxWidth.W))
     val pdestVl        = Option.when(params.writeVlRf)(UInt(VlPhyRegIdxWidth.W))
     val toIntRf        = Option.when(params.writeIntRf)(ValidIO(UInt(params.destDataBitsMax.W)))
+    // The RF producer can differ from toRob when an integer port carries F2I.
+    val intRfOwner     = Option.when(params.writeIntRf)(new RobPtr)
     val toFpRf         = Option.when(params.writeFpRf)(ValidIO(UInt(params.destDataBitsMax.W)))
     val toVecRf        = Option.when(params.writeVecRf)(ValidIO(UInt(VLEN.W)))
     val toV0Rf         = Option.when(params.writeV0Rf)(ValidIO(UInt(params.destDataBitsMax.W)))
@@ -1493,6 +1501,7 @@ object Bundles {
       val res = Wire(new NewExuOutput(params))
       res := DontCare
       res.toRob := toRob
+      res.intRfOwner.foreach(_ := toRob.bits.robIdx)
       res.toIntRf.zip(toIntRf).foreach { case (dst, src) =>
         dst.valid := src.valid
         dst.bits  := src.bits.data
@@ -1626,6 +1635,7 @@ object Bundles {
   }
 
   class WriteBackRFBundle(val params: PregWB, backendParams: BackendParams)(implicit val p: Parameters) extends Bundle with BundleSource with HasXSParameter {
+    val owner = new RobPtr
     val rfWen  = Bool()
     val fpWen  = Bool()
     val vecWen = Bool()
@@ -1637,6 +1647,7 @@ object Bundles {
     this.wakeupSource = s"WB(${params.toString()})"
 
     def fromExuOutput(source: NewExuOutput, wbType: String) = {
+      this.owner := (if (wbType == "int") source.intRfOwner.get else source.toRob.bits.robIdx)
       this.rfWen  := source.toIntRf.map(_.valid).getOrElse(false.B)
       this.fpWen  := source.toFpRf.map(_.valid).getOrElse(false.B)
       this.vecWen := source.toVecRf.map(_.valid).getOrElse(false.B)
@@ -1657,6 +1668,7 @@ object Bundles {
       rfWrite.pdest := this.pdest
       rfWrite.data  := this.data
       rfWrite.rfWen := this.rfWen
+      rfWrite.owner := this.owner
       rfWrite
     }
 

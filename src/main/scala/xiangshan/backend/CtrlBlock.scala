@@ -728,6 +728,27 @@ class CtrlBlockImp(
   rename.io.diffRatCommitRobIdxVec.foreach(_ := rob.io.diffRatCommitRobIdxVec.get)
 
   rename.io.redirect := s1_s3_redirect
+  io.toDataPath.intReuseAlloc := rename.io.intReuseAlloc
+  io.toDataPath.intReuseRedirect := s1_s3_redirect
+  rename.io.intReuseRecoveryBusy := io.toDataPath.intReuseRecoveryBusy
+  io.toDataPath.intReuseCommit := 0.U.asTypeOf(io.toDataPath.intReuseCommit)
+  io.toDataPath.intReuseRetire := 0.U.asTypeOf(io.toDataPath.intReuseRetire)
+  if (EnableIntRegReuse) {
+    for (i <- 0 until CommitWidth) {
+      val c = rob.io.commits
+      io.toDataPath.intReuseRetire(i).valid := c.isCommit && c.commitValid(i)
+      io.toDataPath.intReuseRetire(i).bits.owner := c.robIdx(i)
+      io.toDataPath.intReuseRetire(i).bits.hasLatter := xiangshan.backend.rename.CompressType.isNotNORMAL(c.info(i).entryPairType)
+    }
+  }
+  if (EnableIntRegReuse) {
+    for (i <- 0 until RabCommitWidth) {
+      val c = rob.io.rabCommits
+      io.toDataPath.intReuseCommit(i).valid := c.isCommit && c.commitValid(i) && c.info(i).rfWen && !c.info(i).isMove
+      io.toDataPath.intReuseCommit(i).bits.tag := c.info(i).pdest
+      io.toDataPath.intReuseCommit(i).bits.owner := c.robIdx.get(i)
+    }
+  }
   rename.io.rabCommits := rob.io.rabCommits
   rename.io.vlCommits := rob.io.vlCommits
   rename.io.singleStep := io.fromCSR.toDecode.singlestep
@@ -986,6 +1007,11 @@ class CtrlBlockIO()(implicit p: Parameters, params: BackendParams) extends XSBun
     val debugIQEnqHasIssuedVec = Option.when(backendParams.debugEn)(Vec(IQNum, Input(Bool())))
   }
   val toDataPath = new Bundle {
+    val intReuseAlloc = Output(Vec(RenameWidth, Valid(new xiangshan.backend.rename.IntReuseAllocation)))
+    val intReuseCommit = Output(Vec(RabCommitWidth, Valid(new xiangshan.backend.rename.IntReuseAllocation)))
+    val intReuseRetire = Output(Vec(CommitWidth, Valid(new xiangshan.backend.rename.IntReuseRetirement)))
+    val intReuseRedirect = Output(Valid(new Redirect))
+    val intReuseRecoveryBusy = Input(Bool())
     val flush = ValidIO(new Redirect)
     val pcToDataPathIO = new PcToDataPathIO(params)
   }

@@ -205,6 +205,11 @@ class BackendInlinedImp(override val wrapper: BackendInlined)(implicit p: Parame
 
   private val backendCriticalError = Wire(Bool())
 
+  intRegion.io.intReuseAlloc := ctrlBlock.io.toDataPath.intReuseAlloc
+  intRegion.io.intReuseCommit := ctrlBlock.io.toDataPath.intReuseCommit
+  intRegion.io.intReuseRetire := ctrlBlock.io.toDataPath.intReuseRetire
+  intRegion.io.intReuseRedirect := ctrlBlock.io.toDataPath.intReuseRedirect
+  ctrlBlock.io.toDataPath.intReuseRecoveryBusy := intRegion.io.intReuseRecoveryBusy
   ctrlBlock.io.fromTop.hartId := io.fromTop.hartId
   ctrlBlock.io.frontend <> io.frontend
   ctrlBlock.io.fromBJUResolve := intRegion.io.toFrontendBJUResolve.get
@@ -405,9 +410,7 @@ class BackendInlinedImp(override val wrapper: BackendInlined)(implicit p: Parame
   fpRegion.fromIntIQ <> intRegion.io.intIQOut.get
   fpRegion.in.fromIntRegion.fromIntIQDeqOg1Payload <> intRegion.io.intIQDeqOg1PayloadOut.get
   fpRegion.in.fromVecRegion := vecRegion.out.toFltRegion
-  intRegion.io.cross.F2IDataIn.get.valid := fpRegion.out.toIntRegion.intWbNext.head.head.wen
-  intRegion.io.cross.F2IDataIn.get.pdest := fpRegion.out.toIntRegion.intWbNext.head.head.pdest
-  intRegion.io.cross.F2IDataIn.get.data := fpRegion.out.toIntRegion.intWbNext.head.head.data
+  intRegion.io.cross.F2IDataIn.get := fpRegion.out.toIntRegion.f2i
   intRegion.io.cross.busyTableF2I.get := fpRegion.out.toIntRegion.busyTableF2I
   intRegion.io.og0CancelForStdFromFltRegion.get := fpRegion.out.toIntRegion.og0CancelForStd
   intRegion.io.fromFpExu.get := fpRegion.out.toIntRegion.fpExuOut

@@ -157,9 +157,11 @@ class RenameTable(reg_t: RegType, numDiffWritePorts: Int)(implicit p: Parameters
   arch_table := arch_table_next
 
   for (((old, free), i) <- (old_pdest zip need_free).zipWithIndex) {
-    val hasDuplicate = old_pdest.take(i).map(_ === old)
+    // Both versions and move aliases keep their common base off the free list.
+    def base(tag: UInt): UInt = if (reg_t == Reg_I && EnableIntRegReuse) tag(IntPhyBaseIdxWidth - 1, 0) else tag
+    val hasDuplicate = old_pdest.take(i).map(x => base(x) === base(old))
     val blockedByDup = if (i == 0) false.B else VecInit(hasDuplicate).asUInt.orR
-    free := VecInit(arch_table.map(_ =/= old)).asUInt.andR && !blockedByDup
+    free := (if (reg_t == Reg_I && EnableIntRegReuse) base(old) =/= 0.U else true.B) && VecInit(arch_table.map(x => base(x) =/= base(old))).asUInt.andR && !blockedByDup
   }
 
   io.old_pdest := old_pdest
@@ -240,7 +242,7 @@ class RenameTableWrapper(implicit p: Parameters) extends XSModule {
   io.debug_int_rat .foreach(_ := intRat.io.debug_rdata.get)
   if (env.AlwaysBasicDiff || env.EnableDifftest) {
     // Delay of RenameTable should be same as PhyRegFile
-    val difftest = DifftestModule(new DiffArchIntRenameTable(IntPhyRegs), delay = 2)
+    val difftest = DifftestModule(new DiffArchIntRenameTable(IntRegTagCount), delay = 2)
     difftest.coreid := io.hartId
     difftest.value := diffRatBuffer.get.io.diffRat.intRat
   }

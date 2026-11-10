@@ -65,7 +65,13 @@ class StdFreeList(
   // allocate new physical registers for instructions at rename stage
   //
   val freeRegCnt = Wire(UInt()) // number of free registers in free list
-  io.canAllocate := GatedValidRegNext(freeRegCnt >= RenameWidth.U) // use RegNext for better timing
+  if (regType == Reg_I && EnableIntRegReuse) {
+    // Admission depends on the offered bundle, never on doAllocate/fire.
+    // Newly returned registers become available on the following cycle.
+    io.canAllocate := distanceBetween(tailPtr, headPtr) >= PopCount(io.allocateReq)
+  } else {
+    io.canAllocate := GatedValidRegNext(freeRegCnt >= RenameWidth.U)
+  }
   XSDebug(p"freeRegCnt: $freeRegCnt\n")
 
   val freeListVec = Wire(Vec(freeListSize, Vec(RenameWidth, UInt(PhyRegIdxWidth.W))))

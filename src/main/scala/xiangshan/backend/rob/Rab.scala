@@ -27,7 +27,7 @@ object RenameBufferPtr {
 
 class RenameBufferEntry(implicit p: Parameters) extends XSBundle {
   val info = new RabCommitInfo
-  val robIdx = OptionWrapper(!env.FPGAPlatform, new RobPtr)
+  val robIdx = OptionWrapper(!env.FPGAPlatform || EnableIntRegReuse, new RobPtr)
 }
 
 class RenameBuffer(size: Int)(implicit p: Parameters) extends XSModule with HasCircularQueuePtrHelper {

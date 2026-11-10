@@ -358,6 +358,11 @@ class Region(val params: SchdBlockParams)(implicit p: Parameters) extends XSModu
     println(s"[Region] iqReplaceRCIdxVec: ${iqReplaceRCIdxVec.size}")
   }
   dataPath.io.hartId := io.hartId
+  dataPath.io.intReuseAlloc := io.intReuseAlloc
+  dataPath.io.intReuseCommit := io.intReuseCommit
+  dataPath.io.intReuseRetire := io.intReuseRetire
+  dataPath.io.intReuseRedirect := io.intReuseRedirect
+  io.intReuseRecoveryBusy := dataPath.io.intReuseRecoveryBusy
   dataPath.io.og0CancelForStdFromFltRegion := io.og0CancelForStdFromFltRegion.get
   dataPath.io.flush := flushCopyRegVec.last
   dataPath.io.fromIntIQ.flatten.map(x => {
@@ -962,6 +967,11 @@ class Region(val params: SchdBlockParams)(implicit p: Parameters) extends XSModu
 }
 
 class RegionIO(val params: SchdBlockParams)(implicit p: Parameters) extends XSBundle {
+  val intReuseAlloc = Input(Vec(RenameWidth, Valid(new xiangshan.backend.rename.IntReuseAllocation)))
+  val intReuseCommit = Input(Vec(RabCommitWidth, Valid(new xiangshan.backend.rename.IntReuseAllocation)))
+  val intReuseRetire = Input(Vec(CommitWidth, Valid(new xiangshan.backend.rename.IntReuseRetirement)))
+  val intReuseRedirect = Input(Valid(new Redirect))
+  val intReuseRecoveryBusy = Output(Bool())
   val intSchdParam = backendParams.intSchdParams.get
   val fpSchdParam = backendParams.fpSchdParams.get
   val vecSchdParam = backendParams.vecSchdParams.get

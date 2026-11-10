@@ -233,7 +233,7 @@ class Dispatch(implicit p: Parameters) extends XSModule with HasPerfEvents {
   // RegCacheTagTable Module
   val rcTagTable = Module(new RegCacheTagTable(numRegSrcInt * renameWidth))
   // BusyTable Modules
-  val intBusyTable = Module(new BusyTable(numRegSrcInt * renameWidth, backendParams.numPregWb(IntData()), IntPhyRegs, IntWB()))
+  val intBusyTable = Module(new BusyTable(numRegSrcInt * renameWidth, backendParams.numPregWb(IntData()), IntRegTagCount, IntWB()))
   val fpBusyTable = Module(new BusyTable(numRegSrcFp * renameWidth, backendParams.numPregWb(FpData()), FpPhyRegs, FpWB()))
   val vpBusyTable = Module(new VpBusyTable(numRegSrcVf * renameWidth, backendParams.numPregWb(VecData()), backendParams.vpPregParams, _ => false))
   val v0BusyTable = Module(new BusyTable(numRegSrcV0 * renameWidth, backendParams.numPregWb(V0Data()), V0PhyRegs, V0WB()))

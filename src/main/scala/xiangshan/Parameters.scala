@@ -84,6 +84,7 @@ case class XSCoreParameters
   RobCommitWidth: Int = 8,
   RabCommitWidth: Int = 8,
   MaxUopSize: Int = 8,
+  EnableIntRegReuse: Boolean = false,
   EnableRobCompression: Boolean = true,
   EnableRenameSnapshot: Boolean = true,
   RenameSnapshotNum: Int = 4,
@@ -447,7 +448,7 @@ case class XSCoreParameters
         ExeUnitParams("STD1", Seq(StdCfg, MoudCfg), Seq(), Seq(Seq(IntRD(2, 1), FpRD(13, 0)))),
       ), numEntries = 16, numEnq = 2, numComp = 12),
     ),
-      numPregs = intPreg.numEntries,
+      numPregs = intRegTagCount,
       numDeqOutside = 0,
       schdType = schdType,
       rfDataWidth = intPreg.dataCfg.dataWidth,
@@ -554,7 +555,7 @@ case class XSCoreParameters
     )
   }
 
-  def PregIdxWidthMax = intPreg.addrWidth max vfPreg.addrWidth
+  def PregIdxWidthMax = effectiveIntPreg.addrWidth max vfPreg.addrWidth
 
   def iqWakeUpParams = {
     Seq(
@@ -579,7 +580,11 @@ case class XSCoreParameters
     ).flatten
   }
 
-  def fakeIntPreg = FakeIntPregParams(intPreg.numEntries, intPreg.numBank, intPreg.numRead, intPreg.numWrite)
+  // Version identities have a power-of-two stride; only intPreg.numEntries
+  // base rows are allocatable and physically implemented.
+  def intRegTagCount: Int = if (EnableIntRegReuse) 2 * (1 << log2Up(intPreg.numEntries)) else intPreg.numEntries
+  def effectiveIntPreg: IntPregParams = IntPregParams(intRegTagCount, intPreg.numBank, intPreg.numRead, intPreg.numWrite)
+  def fakeIntPreg = FakeIntPregParams(intRegTagCount, intPreg.numBank, intPreg.numRead, intPreg.numWrite)
 
   val backendParams: BackendParams = backend.BackendParams(
     Map(
@@ -588,7 +593,7 @@ case class XSCoreParameters
       VecScheduler() -> (if (EnableBackendV2Config) backend.BackendV2SchdParams.vecSchdParams else vecSchdParams),
     ),
     Seq(
-      intPreg,
+      effectiveIntPreg,
       fpPreg,
       vfPreg,
       v0Preg,
@@ -759,8 +764,11 @@ trait HasXSParameter {
   def VfPhyRegs = coreParams.vfPreg.numEntries
   def V0PhyRegs = coreParams.v0Preg.numEntries
   def VlPhyRegs = coreParams.vlPreg.numEntries
-  def MaxPhyRegs = Seq(IntPhyRegs, FpPhyRegs, VfPhyRegs, V0PhyRegs, VlPhyRegs).max
-  def IntPhyRegIdxWidth = log2Up(IntPhyRegs)
+  def MaxPhyRegs = Seq(IntRegTagCount, FpPhyRegs, VfPhyRegs, V0PhyRegs, VlPhyRegs).max
+  def EnableIntRegReuse = coreParams.EnableIntRegReuse
+  def IntPhyBaseIdxWidth = log2Up(IntPhyRegs)
+  def IntRegTagCount = coreParams.intRegTagCount
+  def IntPhyRegIdxWidth = log2Up(IntRegTagCount)
   def FpPhyRegIdxWidth = log2Up(FpPhyRegs)
   def VfPhyRegIdxWidth = log2Up(VfPhyRegs)
   def V0PhyRegIdxWidth = log2Up(V0PhyRegs)

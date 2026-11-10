@@ -21,7 +21,7 @@ import difftest.{DiffPhyFpRegState, DifftestModule}
 import freechips.rocketchip.diplomacy.{LazyModule, LazyModuleImp}
 import org.chipsalliance.cde.config.Parameters
 import xiangshan._
-import xiangshan.backend.Bundles.IssueQueueDeqOg1Payload
+import xiangshan.backend.Bundles.{F2IWriteBackBundle, IssueQueueDeqOg1Payload}
 import xiangshan.backend.datapath.DataConfig._
 import xiangshan.backend.datapath.{FpRFReadArbiter, RFRdArbParams}
 import xiangshan.backend.fu.fpu.Bundles.Frm
@@ -331,9 +331,15 @@ class FltRegionImp(
   // TODO
   wakeupF2I := issuePipes.flatten.find(_.out.wakeupF2I.nonEmpty).get.out.wakeupF2I.get
   out.toIntRegion.wakeupF2I := wakeupF2I
-  out.toIntRegion.intWbNext.flatten.zip(issuePipes.flatten.filter(_.out.gpWbNext.nonEmpty)).foreach { case (sink,source) =>
-    sink := source.out.gpWbNext.get
-  }
+  val f2iPipes = issuePipes.flatten.filter(_.out.gpWbNext.nonEmpty)
+  require(f2iPipes.size == 1, "the F2I bridge requires exactly one floating integer writeback pipe")
+  val f2iPipe = f2iPipes.head.out
+  val f2iResult = f2iPipe.gpWbNext.get
+  // Both outputs come from the same FltExu result selection in this cycle.
+  out.toIntRegion.f2i.valid := f2iPipe.robWbNext.valid && f2iResult.wen
+  out.toIntRegion.f2i.pdest := f2iResult.pdest
+  out.toIntRegion.f2i.data := f2iResult.data
+  out.toIntRegion.f2i.owner := f2iPipe.robWbNext.bits.robIdx
   out.toIntRegion.busyTableF2I := issuePipes.flatten.find(_.out.busyTableF2I.nonEmpty).get.out.busyTableF2I.get
   out.toIntRegion.fpRfRdataOut := fpRdata
   val fpExuOut = fpWbDataPath.in.fromExus(1)
@@ -536,7 +542,7 @@ object FltRegionModule {
 
     val toIntRegion = new Bundle {
       val wakeupF2I = new FltWakeUpBundle(backendParams.intPregParams)
-      val intWbNext: MixedVec[MixedVec[Exu.ToRf]] = param.genExuToRfBundle(backendParams.intPregParams)
+      val f2i = new F2IWriteBackBundle
       val busyTableF2I = UInt(3.W)
       val fpRfRdataOut = Vec(backendParams.numPregRd(FpData()), UInt(backendParams.fpSchdParams.get.rfDataWidth.W))
       val fpExuOut = backendParams.fpSchdParams.get.genNewExuOutputValidBundle

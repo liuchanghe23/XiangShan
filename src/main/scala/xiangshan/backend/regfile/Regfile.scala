@@ -51,7 +51,8 @@ class RfReadPortWithConfig(val rfReadDataCfg: DataConfig, addrWidth: Int)(implic
   def readVf : Boolean = VecRegSrcDataSet .contains(rfReadDataCfg)
 }
 
-class RfWritePortBundle(val pregParams: PregParams) extends Bundle {
+class RfWritePortBundle(val pregParams: PregParams)(implicit p: Parameters) extends Bundle {
+  val owner = new RobPtr
   val dataWidth = pregParams.dataCfg.dataWidth
   val addrWidth = pregParams.addrWidth
   val wen = Bool()

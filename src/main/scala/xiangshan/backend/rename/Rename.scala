@@ -58,6 +58,8 @@ class Rename(implicit p: Parameters) extends XSModule with HasCircularQueuePtrHe
 
   val io = IO(new Bundle() {
     val redirect = Flipped(ValidIO(new Redirect))
+    val intReuseAlloc = Output(Vec(RenameWidth, Valid(new IntReuseAllocation)))
+    val intReuseRecoveryBusy = Input(Bool())
     val rabCommits = Input(new RabCommitIO)
     val vlCommits = Input(new VlCommitBundle(RabCommitWidth))
     // from csr
@@ -141,7 +143,7 @@ class Rename(implicit p: Parameters) extends XSModule with HasCircularQueuePtrHe
     case commit =>
       commit.doCommit := io.rabCommits.isCommit
       commit.archAlloc := io.rabCommits.commitValid zip io.rabCommits.info map {
-        case (valid, info) => valid && info.rfWen && !info.isMove
+        case (valid, info) => valid && info.rfWen && !info.isMove && (if (EnableIntRegReuse) !info.pdest(IntPhyBaseIdxWidth) else true.B)
       }
   }
   intFreeList.io.debug_rat.foreach(_ := debug_int_rat.get)
@@ -280,13 +282,13 @@ class Rename(implicit p: Parameters) extends XSModule with HasCircularQueuePtrHe
   // only when all free list and dispatch1 has enough space can we do allocation
   // when lsqEnqCtrl recover finish, it can allocate freelist.
   // when isWalk, freelist can definitely allocate
-  intFreeList.io.doAllocate := fpFreeList.io.canAllocate && vecFreeList.io.canAllocate && vlFreeList.io.canAllocate && io.toLsqEnqCtrl.canAccept && dispatchCanAcc || io.rabCommits.isWalk
-  fpFreeList.io.doAllocate := intFreeList.io.canAllocate && vecFreeList.io.canAllocate && vlFreeList.io.canAllocate && io.toLsqEnqCtrl.canAccept && dispatchCanAcc || io.rabCommits.isWalk
-  vecFreeList.io.doAllocate := intFreeList.io.canAllocate && fpFreeList.io.canAllocate && vlFreeList.io.canAllocate && io.toLsqEnqCtrl.canAccept && dispatchCanAcc || io.rabCommits.isWalk
-  vlFreeList.io.doAllocate := intFreeList.io.canAllocate && fpFreeList.io.canAllocate && vecFreeList.io.canAllocate && io.toLsqEnqCtrl.canAccept && dispatchCanAcc || io.vlCommits.isWalk
+  intFreeList.io.doAllocate := fpFreeList.io.canAllocate && vecFreeList.io.canAllocate && vlFreeList.io.canAllocate && io.toLsqEnqCtrl.canAccept && dispatchCanAcc && !io.intReuseRecoveryBusy || io.rabCommits.isWalk
+  fpFreeList.io.doAllocate := intFreeList.io.canAllocate && vecFreeList.io.canAllocate && vlFreeList.io.canAllocate && io.toLsqEnqCtrl.canAccept && dispatchCanAcc && !io.intReuseRecoveryBusy || io.rabCommits.isWalk
+  vecFreeList.io.doAllocate := intFreeList.io.canAllocate && fpFreeList.io.canAllocate && vlFreeList.io.canAllocate && io.toLsqEnqCtrl.canAccept && dispatchCanAcc && !io.intReuseRecoveryBusy || io.rabCommits.isWalk
+  vlFreeList.io.doAllocate := intFreeList.io.canAllocate && fpFreeList.io.canAllocate && vecFreeList.io.canAllocate && io.toLsqEnqCtrl.canAccept && dispatchCanAcc && !io.intReuseRecoveryBusy || io.vlCommits.isWalk
 
   //           dispatch1 ready ++ float point free list ready ++ int free list ready ++ vec free list ready     ++ not walk
-  val canOut = dispatchCanAcc && fpFreeList.io.canAllocate && intFreeList.io.canAllocate && vecFreeList.io.canAllocate && vlFreeList.io.canAllocate && !io.rabCommits.isWalk && !io.vlCommits.isWalk && io.toLsqEnqCtrl.canAccept
+  val canOut = dispatchCanAcc && !io.intReuseRecoveryBusy && fpFreeList.io.canAllocate && intFreeList.io.canAllocate && vecFreeList.io.canAllocate && vlFreeList.io.canAllocate && !io.rabCommits.isWalk && !io.vlCommits.isWalk && io.toLsqEnqCtrl.canAccept
 
   val isFusionVec = io.isFusionVec
   // Decode clears the second uop of every fusion pair. CompressUnit sees the
@@ -412,6 +414,7 @@ class Rename(implicit p: Parameters) extends XSModule with HasCircularQueuePtrHe
   val needVlDest     = Wire(Vec(RenameWidth, Bool()))
   private val inHeadValid = io.in.head.valid
 
+  val intDidReuse = WireDefault(VecInit.fill(RenameWidth)(false.B))
   val isMove = Wire(Vec(RenameWidth, Bool()))
   isMove zip io.in.map(_.bits) foreach {
     case (move, in) => move := Mux(in.exceptionVec.orR, false.B, in.isMove)
@@ -495,8 +498,9 @@ class Rename(implicit p: Parameters) extends XSModule with HasCircularQueuePtrHe
     vecFreeList.io.walkReq(i) := walkNeedVecDest(i)
     vlFreeList.io.allocateReq(i) := needVlDest(i)
     vlFreeList.io.walkReq(i) := walkNeedVlDest(i)
-    intFreeList.io.allocateReq(i) := needIntDest(i) && !isMove(i)
-    intFreeList.io.walkReq(i) := walkNeedIntDest(i) && !walkIsMove(i)
+    intFreeList.io.allocateReq(i) := needIntDest(i) && !isMove(i) && !intDidReuse(i)
+    intFreeList.io.walkReq(i) := walkNeedIntDest(i) && !walkIsMove(i) &&
+      (if (EnableIntRegReuse) !io.rabCommits.info(i).pdest(IntPhyBaseIdxWidth) else true.B)
 
     // no valid instruction from decode stage || all resources (dispatch1 + both free lists) ready
     io.in(i).ready := !io.in(0).valid || canOut
@@ -591,7 +595,7 @@ class Rename(implicit p: Parameters) extends XSModule with HasCircularQueuePtrHe
     // Assign performance counters
     uops(i).debug.foreach(_.perfDebugInfo.renameTime := GTimer())
 
-    io.out(i).valid := io.in(i).valid && intFreeList.io.canAllocate && fpFreeList.io.canAllocate && vecFreeList.io.canAllocate && vlFreeList.io.canAllocate && !io.rabCommits.isWalk && !io.vlCommits.isWalk && io.toLsqEnqCtrl.canAccept
+    io.out(i).valid := io.in(i).valid && !io.intReuseRecoveryBusy && intFreeList.io.canAllocate && fpFreeList.io.canAllocate && vecFreeList.io.canAllocate && vlFreeList.io.canAllocate && !io.rabCommits.isWalk && !io.vlCommits.isWalk && io.toLsqEnqCtrl.canAccept
     io.out(i).bits := uops(i)
 
     // set link uop's src1Type to SrcType.no
@@ -835,6 +839,40 @@ class Rename(implicit p: Parameters) extends XSModule with HasCircularQueuePtrHe
     linkPsrc0Valid := false.B
   }
 
+  io.intReuseAlloc := 0.U.asTypeOf(io.intReuseAlloc)
+  if (EnableIntRegReuse) {
+    val reuse = Module(new IntRegisterReuse(IntPhyRegs, RenameWidth))
+    reuse.io.accept := io.out.map(_.fire).reduce(_ || _) && !io.redirect.valid
+    for (i <- 0 until RenameWidth) {
+      val self = (0 until 2).map(j =>
+        io.out(i).bits.srcType(j) === SrcType.xp && io.in(i).bits.lsrc(j) === io.in(i).bits.ldest)
+      val source = Mux(self.head, io.out(i).bits.psrc(0), io.out(i).bits.psrc(1))
+      val pureInteger = FuType.isAlu(io.in(i).bits.fuType) ||
+        io.in(i).bits.fuType === FuType.mul.U || io.in(i).bits.fuType === FuType.div.U ||
+        io.in(i).bits.fuType === FuType.bku.U
+      reuse.io.valid(i) := io.in(i).valid
+      reuse.io.eligibleOp(i) := needIntDest(i) && !isMove(i) && pureInteger &&
+        self.reduce(_ || _) && io.in(i).bits.firstUop && io.in(i).bits.lastUop &&
+        !io.in(i).bits.exceptionVec.orR && !io.in(i).bits.flushPipe && !io.singleStep
+      reuse.io.selfSource(i) := source
+      for (j <- 0 until 2) {
+        reuse.io.src(i)(j).valid := io.out(i).bits.srcType(j) === SrcType.xp
+        reuse.io.src(i)(j).bits := io.out(i).bits.psrc(j)
+      }
+      reuse.io.fresh(i) := needIntDest(i) && !isMove(i) && !reuse.io.reuse(i)
+      reuse.io.dest(i) := io.out(i).bits.pdest
+      intDidReuse(i) := reuse.io.reuse(i)
+      val versionOne = source | (BigInt(1) << IntPhyBaseIdxWidth).U
+      io.out(i).bits.pdest := Mux(isMove(i), io.out(i).bits.psrcIntForMove,
+        Mux(intDidReuse(i), versionOne, uops(i).pdest))
+      io.intReuseAlloc(i).valid := io.out(i).fire && needIntDest(i) && !isMove(i) && !io.redirect.valid
+      io.intReuseAlloc(i).bits.tag := io.out(i).bits.pdest
+      io.intReuseAlloc(i).bits.owner := io.out(i).bits.robIdx
+    }
+    XSPerfAccumulate("int_reuse_accepted", PopCount(io.out.zip(intDidReuse).map { case (out, reuse) => out.fire && reuse }))
+    XSPerfAccumulate("int_reuse_multi_lane_bundle", PopCount(io.out.zip(intDidReuse).map { case (out, reuse) => out.fire && reuse }) > 1.U)
+  }
+
   val genSnapshot = Cat(io.out.map(out => out.fire && out.bits.snapshot)).orR
   val lastCycleCreateSnpt = RegInit(false.B)
   lastCycleCreateSnpt := genSnapshot && !io.snptIsFull
@@ -891,7 +929,7 @@ class Rename(implicit p: Parameters) extends XSModule with HasCircularQueuePtrHe
 
     // II. Free List Update
     intFreeList.io.freeReq(i) := int_need_free(i)
-    intFreeList.io.freePhyReg(i) := RegNext(int_old_pdest(i))
+    intFreeList.io.freePhyReg(i) := RegNext(if (EnableIntRegReuse) int_old_pdest(i)(IntPhyBaseIdxWidth - 1, 0) else int_old_pdest(i))
     fpFreeList.io.freeReq(i)  := GatedValidRegNext(commitValid && needDestRegCommit(Reg_F, io.rabCommits.info(i)))
     fpFreeList.io.freePhyReg(i) := fp_old_pdest(i)
     vecFreeList.io.freeReq(i)  := GatedValidRegNext(commitValid && needDestRegCommit(Reg_V, io.rabCommits.info(i)))

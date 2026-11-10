@@ -588,6 +588,18 @@ class DefaultConfig(n: Int = 1) extends Config(
     ++ new BaseConfig(n)
 )
 
+class IntRegReuseConfig(n: Int = 1) extends Config(
+  new DefaultConfig(n).alter((site, here, up) => {
+    case XSTileKey => up(XSTileKey).map(_.copy(EnableIntRegReuse = true))
+  })
+)
+
+class MinimalIntRegReuseConfig(n: Int = 1) extends Config(
+  new MinimalConfig(n).alter((site, here, up) => {
+    case XSTileKey => up(XSTileKey).map(_.copy(EnableIntRegReuse = true))
+  })
+)
+
 class NoRobCompressionConfig(n: Int = 1) extends Config(
   new DefaultConfig(n).alter((site, here, up) => {
     case XSTileKey => up(XSTileKey).map(_.copy(EnableRobCompression = false))

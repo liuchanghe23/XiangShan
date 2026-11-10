@@ -252,3 +252,40 @@ object xiangshan extends ChiselModule {
     def forkEnv = Map("PATH" -> envPath)
   }
 }
+
+// Small production RTL blocks tested independently of the full SoC build.
+object intReuseTests extends ChiselModule {
+  override def sources: T[Seq[PathRef]] = Task.Sources {
+    Seq(
+      PathRef(pwd / "src/main/scala/xiangshan/backend/rename/IntRegisterReuse.scala"),
+      PathRef(pwd / "src/main/scala/xiangshan/backend/regfile/IntShadowRegfile.scala")
+    )
+  }
+  object test extends SbtTests with TestModule.ScalaTest {
+    override def sources: T[Seq[PathRef]] = Task.Sources {
+      Seq(PathRef(pwd / "src/test/scala/xiangshan/backend/reuse"))
+    }
+    def ivyDeps: T[Agg[Dep]] = super.ivyDeps() ++ Agg(mvn"org.scalatest::scalatest:3.2.19")
+  }
+}
+
+object intReuseIntegration extends ChiselModule {
+  def moduleDeps = Seq(xiangshan)
+  override def sources: T[Seq[PathRef]] = Task.Sources { Seq.empty }
+  object test extends SbtTests with TestModule.ScalaTest {
+    override def sources: T[Seq[PathRef]] = Task.Sources {
+      Seq(PathRef(pwd / "src/test/scala/xiangshan/backend/reuseintegration"))
+    }
+    def ivyDeps: T[Agg[Dep]] = super.ivyDeps() ++ Agg(mvn"org.scalatest::scalatest:3.2.19")
+    def forkArgs = Seq("-Xmx16G", "-Xss64m")
+  }
+}
+
+object intReuseSim extends ChiselModule {
+  def moduleDeps = Seq(xiangshan)
+  override def sources: T[Seq[PathRef]] = Task.Sources {
+    Seq("SimTop.scala", "SimMMIO.scala", "Iommu.scala").map(name =>
+      PathRef(pwd / "src/test/scala/top" / name))
+  }
+  def forkArgs = Seq("-Xmx40G", "-Xss128m")
+}
