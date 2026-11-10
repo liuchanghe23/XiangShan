@@ -193,10 +193,11 @@ class VirtualLoadQueue(implicit p: Parameters) extends XSModule
     XSError(entryCanEnq && allocated(i), s"can't allocated entry twice! ${i}\n")
   }
 
+  // Dispatch reserves LQ and SQ independently; a load needs only LQ capacity.
   for (i <- 0 until io.enq.req.length) {
     val lqIdx = enqPtrExt(0) + validVLoadOffsetRShift.take(i + 1).reduce(_ + _)
     val index = io.enq.req(i).bits.lqIdx
-    XSError(canEnqueue(i) && !enqCancel(i) && (!io.enq.canAccept || !io.enq.sqCanAccept), s"must accept $i\n")
+    XSError(canEnqueue(i) && !enqCancel(i) && !io.enq.canAccept, s"must accept $i\n")
     XSError(canEnqueue(i) && !enqCancel(i) && index.value =/= lqIdx.value, s"must be the same entry $i\n")
     io.enq.resp(i) := lqIdx
   }

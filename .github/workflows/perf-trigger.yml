@@ -29,6 +29,8 @@ on:
         type: choice
         options:
           - DefaultConfig
+          - IntRegReuseConfig
+          - MinimalIntRegReuseConfig
           - BackendV2Config
           - KunminghuV2Config
         default: DefaultConfig
